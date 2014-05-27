@@ -1,0 +1,18 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+ RewriteBase /
+ RewriteCond $1 !^(index\.php|assets|images|captcha|data|include|uploads|robots\.txt)
+ RewriteCond %{REQUEST_FILENAME} !-f
+ RewriteCond %{REQUEST_FILENAME} !-d
+ RewriteRule ^(.*)$ /index.php/$1 [L]
+</IfModule>
+
+# secure htaccess file
+<files .htaccess>
+    order allow,deny
+    deny from all
+</files>
+<FilesMatch "\.(htaccess|htpasswd)$">
+    Order Allow,Deny
+    Deny from all
+</FilesMatch>

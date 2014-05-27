@@ -1,0 +1,402 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:WindowedApplication xmlns:fx="http://ns.adobe.com/mxml/2009" 
+					   xmlns:s="library://ns.adobe.com/flex/spark"
+					   creationComplete="creationCompleteHandler(event)"
+					   resize="resizeHandler(event)"
+					   addedToStage="addedToStageHandler(event)"
+					   minWidth="800"
+					   minHeight="600">
+	<fx:Script>
+		<![CDATA[
+			import com.hurlant.crypto.hash.MD5;
+			import com.hurlant.util.Hex;
+			
+			import flash.globalization.DateTimeFormatter;
+			
+			import mx.events.FlexEvent;
+			import mx.events.ResizeEvent;
+			
+			import spark.components.Alert;
+			
+			[Bindable]
+			private var _containerPadding:int = 10;
+			[Bindable]
+			private var _labelWidth:int = 120;
+			private var _target:File;
+			private var _dateTimeFormatter:DateTimeFormatter;
+			private var _helpers:Array = [];
+			private var _libraries:Array = [];
+			private var _frontEndLibraries:Array = [];
+			
+			private function creationCompleteHandler( $event:FlexEvent ):void
+			{
+				_dateTimeFormatter = new DateTimeFormatter( 'ko-KR' );
+				_dateTimeFormatter.setDateTimePattern( 'yyyy-MM-dd HH:mm:ss' );
+			}
+			
+			private function _log( $message:String ):void
+			{
+				log.appendText( '[' + _dateTimeFormatter.format( new Date() ) + '] ' + $message + '\n' );
+			}
+			
+			private function updateLayout():void
+			{
+				if( !stage )
+				{
+					return;
+				}
+				folderPath.width = 0;
+				folderPath.width = stage.nativeWindow.width - findButton.width - folderGroup.gap - _containerPadding * 2;
+			}
+			
+			private function resizeHandler( $event:ResizeEvent ):void
+			{
+				updateLayout();
+			}
+			
+			private function addedToStageHandler( $event:Event ):void
+			{
+				updateLayout();
+			}
+			
+			private function clickFindHandler( $event:MouseEvent ):void
+			{
+				if( !_target )
+				{
+					_target = new File();
+					_target.addEventListener( Event.SELECT, selectDirectoryHandler );
+				}
+				_target.browseForDirectory( '프로젝트를 생성할 폴더를 선택해주세요.' );
+			}
+			
+			private function selectDirectoryHandler( $event:Event ):void
+			{
+				folderPath.text = _target.nativePath;
+			}
+			
+			private function setConfig( $file:File, $key:*, $value:String = null ):void
+			{
+				var fileStream:FileStream = new FileStream();
+				fileStream.open( $file, FileMode.READ );
+				var content:String = fileStream.readMultiByte( fileStream.bytesAvailable, 'utf-8' );
+				if( $key is String )
+				{
+					content = content.replace( '{{' + $key + '}}', $value );					
+				}
+				else if( $key is Object )
+				{
+					var len:int = $key.length;
+					for( var i:String in $key )
+					{
+						content = content.replace( '{{' + i + '}}', $key[ i ] );
+					}
+				}
+				
+				fileStream.open( $file, FileMode.UPDATE );
+				fileStream.writeMultiByte( content, 'utf-8' );
+				fileStream.close();
+			}
+			
+			private function _getRandomHash():String
+			{
+				var bytes:ByteArray = new ByteArray();
+				bytes.writeUTF( new Date().time.toString() );
+				var md5:MD5 = new MD5();
+				return Hex.fromArray( md5.hash( bytes ) );
+			}
+			
+			private function _moveChildren( $children:Array, $target:File, $checkThirdPartyDirectory:Boolean = true ):void
+			{
+				for each( var item:File in $children )
+				{
+					var target:File;
+					if( $checkThirdPartyDirectory && item.name == 'third_party' )
+					{
+						target
+						_moveChildren( item.getDirectoryListing(), _target.resolvePath( 'application/third_party' ), false ); 
+					}
+					else
+					{
+						target = $target.resolvePath( item.name.replace( '{{prefix}}', prefix.text ) );
+						item.copyTo( target, true );
+					}
+				}
+			}
+			
+			private function _addHelpers():void
+			{
+				var len:int = _helpers.length;
+				for( var i:int = 0; i < len; i++ )
+				{
+					var file:File = File.applicationDirectory.resolvePath( 'sources/ci/helpers/' + _helpers[ i ] );
+					var children:Array = file.getDirectoryListing();
+					_moveChildren( children, _target.resolvePath( 'application/helpers/' ) );
+				}
+			}
+			
+			private function _addLibraries():void
+			{
+				var len:int = _libraries.length;
+				for( var i:int = 0; i < len; i++ )
+				{
+					var file:File = File.applicationDirectory.resolvePath( 'sources/ci/libraries/' + _libraries[ i ] );
+					var children:Array = file.getDirectoryListing();
+					_moveChildren( children, _target.resolvePath( 'application/libraries/' ) );
+				}
+			}
+			
+			private function _scrapResources( $list:Array, $tag:String ):String
+			{
+				var js:String = '\t<script src="%path"></script>\n';
+				var css:String = '\t<link rel="stylesheet" src="%path"/>\n';
+				var len:int = $list.length;
+				for( var i:int = 0; i < len; i++ )
+				{
+					var item:File = $list[ i ];
+					if( item.isDirectory )
+					{
+						$tag = _scrapResources( item.getDirectoryListing(), $tag );
+					}
+					else
+					{
+						if( item.name.indexOf( '.min.js' ) > 0 || item.name.indexOf( '.min.css' ) > 0 )
+						{
+							var path:String = item.nativePath.split( '\\' ).join( '/' );
+							if( item.extension == 'js' )
+							{
+								$tag += js.replace( '%path', '/assets/libs/' + path.split( '/front-end/' ).pop() );
+							}
+							else if( item.extension == 'css' )
+							{
+								$tag += css.replace( '%path', '/assets/libs/' + path.split( '/front-end/' ).pop() );
+							}
+						}
+					}
+				}
+				return $tag;
+			}
+			
+			private function _addHTML( $tag:String ):void
+			{
+				var fileStream:FileStream = new FileStream();
+				var html:File = _target.resolvePath( 'application/views/default.php' );
+				fileStream.open( html, FileMode.READ );
+				var content:String = fileStream.readMultiByte( fileStream.bytesAvailable, 'utf-8' );
+				content = content.split( '</head>' ).join( $tag + '</head>' );
+				fileStream.open( html, FileMode.UPDATE );
+				fileStream.writeMultiByte( content, 'utf-8' );
+				fileStream.close();
+			}
+			
+			private function _addFrontEndLibraries():void
+			{
+				var len:int = _frontEndLibraries.length;
+				var tag:String = '';
+				for( var i:int = 0; i < len; i++ )
+				{
+					var file:File = File.applicationDirectory.resolvePath( 'sources/front-end/' + _frontEndLibraries[ i ] );
+					var children:Array = file.getDirectoryListing();
+					_moveChildren( children, _target.resolvePath( 'assets/libs/' + _frontEndLibraries[ i ] ) );
+					tag = _scrapResources( children, tag );
+				}
+				_addHTML( tag );
+			}
+			
+			private function _createHtAccessFile():void
+			{
+				var content:String = '<IfModule mod_rewrite.c>\n' +
+					'\tRewriteEngine On\n' +
+					'\tRewriteBase /\n' +
+					'\tRewriteCond $1 !^(index\.php|assets|uploads|robots\.txt)\n' +
+					'\tRewriteCond %{REQUEST_FILENAME} !-f\n' +
+					'\tRewriteCond %{REQUEST_FILENAME} !-d\n' +
+					'\tRewriteRule ^(.*)$ /index.php/$1 [L]\n' +
+					'</IfModule>\n' +
+					'\n' +
+					'# secure htaccess file\n' +
+					'<files .htaccess>\n' +
+					'\torder allow,deny\n' +
+					'\tdeny from all\n' +
+					'</files>\n' +
+					'<FilesMatch "\.(htaccess|htpasswd)$">\n' +
+					'\tOrder Allow,Deny\n' +
+					'\tDeny from all\n' +
+					'</FilesMatch>';
+				var file:File = _target.resolvePath( '.htaccess' );
+				var fileStream:FileStream = new FileStream();
+				fileStream.open( file, FileMode.WRITE );
+				fileStream.writeMultiByte( content, 'utf-8' );
+				fileStream.close();
+			}
+			
+			private function clickCreateHandler( $event:MouseEvent ):void
+			{
+				if( !_target )
+				{
+					Alert.show( 'Please select the correct parent directory.' );
+					return;
+				}
+				var ci:File = File.applicationDirectory.resolvePath( 'sources/ci/core/2.1.4/' );
+				_target = _target.resolvePath( projectName.text );
+				_moveChildren( ci.getDirectoryListing(), _target, false );
+				_createHtAccessFile();
+				var config:File = _target.resolvePath( 'application/config/config.php' );
+				var database:File = _target.resolvePath( 'application/config/database.php' );
+				setConfig( config, { encryption_key: _getRandomHash(), prefix: prefix.text } );
+				setConfig( database, { db_host: db_host.text, db_username: db_username.text, db_password: db_password.text, db_dbname: db_dbname.text } );
+				_addHelpers();
+				_addLibraries();
+				_addFrontEndLibraries();
+				_log( 'Done.\n' );
+			}
+			
+			private function clickHelperCheckboxHandler( $event:MouseEvent ):void
+			{
+				var checkbox:CheckBox = $event.currentTarget as CheckBox;
+				if( checkbox.selected )
+				{
+					_helpers.push( checkbox.label );
+				}
+				else
+				{
+					var index:int = _helpers.indexOf( checkbox.label );
+					if( index > -1 )
+					{
+						_helpers.splice( index, 1 );
+					}
+				}
+			}
+			
+			private function clickLibraryCheckboxHandler( $event:MouseEvent ):void
+			{
+				var checkbox:CheckBox = $event.currentTarget as CheckBox;
+				if( checkbox.selected )
+				{
+					_libraries.push( checkbox.label );
+				}
+				else
+				{
+					var index:int = _libraries.indexOf( checkbox.label );
+					if( index > -1 )
+					{
+						_libraries.splice( index, 1 );
+					}
+				}
+			}
+			
+			private function clickFrontEndCheckboxHandler( $event:MouseEvent ):void
+			{
+				var checkbox:CheckBox = $event.currentTarget as CheckBox;
+				if( checkbox.selected )
+				{
+					_frontEndLibraries.push( checkbox.label );
+				}
+				else
+				{
+					var index:int = _frontEndLibraries.indexOf( checkbox.label );
+					if( index > -1 )
+					{
+						_frontEndLibraries.splice( index, 1 );
+					}
+				}
+			}
+			
+		]]>
+	</fx:Script>
+	<s:VGroup width="100%"
+			  paddingBottom="{_containerPadding}"
+			  paddingLeft="{_containerPadding}"
+			  paddingRight="{_containerPadding}"
+			  paddingTop="{_containerPadding}">
+		<!--
+			// Title
+		-->
+		<s:Label text="CodeIgniter Generator" fontSize="14" fontWeight="bold"/>
+		<s:Spacer height="12"/>
+		<!--
+			// Parent Directory
+		-->
+		<s:HGroup>
+			<s:Label text="Project Directory (Parent Directory)"/>
+		</s:HGroup>
+		<s:HGroup id="folderGroup" width="100%">
+			<s:TextInput id="folderPath" enabled="false" text=""/>
+			<s:Button id="findButton" label="Find" click="clickFindHandler(event)"/>
+		</s:HGroup>
+		<!--
+			// Project Info
+		-->
+		<s:HGroup verticalAlign="middle">
+			<s:Label text="Project Name" width="{_labelWidth}"/>
+			<s:TextInput id="projectName" text="CI_Project"/>
+			<s:Label text="Prefix" width="{_labelWidth}"/>
+			<s:TextInput id="prefix" text="MY_"/>
+		</s:HGroup>
+		<!--
+			// Database Info
+		-->
+		<s:HGroup verticalAlign="middle">
+			<s:Label text="Database Host" width="{_labelWidth}"/>
+			<s:TextInput id="db_host" text="localhost"/>
+			<s:Label text="Database Username" width="{_labelWidth}"/>
+			<s:TextInput id="db_username" text=""/>
+		</s:HGroup>
+		<s:HGroup verticalAlign="middle">
+			<s:Label text="Database Password" width="{_labelWidth}"/>
+			<s:TextInput id="db_password" displayAsPassword="true" text=""/>
+			<s:Label text="Database Name" width="{_labelWidth}"/>
+			<s:TextInput id="db_dbname" text=""/>
+		</s:HGroup>
+		<!--
+			// Helpers
+		-->
+		<s:HGroup>
+			<s:Label text="Helpers"/>
+		</s:HGroup>
+		<s:HGroup verticalAlign="middle">
+			<s:CheckBox label="crypt" click="clickHelperCheckboxHandler(event)"/>
+			<s:CheckBox label="directory" click="clickHelperCheckboxHandler(event)"/>
+			<s:CheckBox label="header" click="clickHelperCheckboxHandler(event)"/>
+			<s:CheckBox label="object" click="clickHelperCheckboxHandler(event)"/>
+			<s:CheckBox label="tel" click="clickHelperCheckboxHandler(event)"/>
+			<s:CheckBox label="youtube" click="clickHelperCheckboxHandler(event)"/>
+		</s:HGroup>
+		<!--
+			// Libraries
+		-->
+		<s:HGroup>
+			<s:Label text="Libraries"/>
+		</s:HGroup>
+		<s:HGroup verticalAlign="middle">
+			<s:CheckBox label="excel" click="clickLibraryCheckboxHandler(event)"/>
+			<s:CheckBox label="js" click="clickLibraryCheckboxHandler(event)"/>
+			<s:CheckBox label="mobiledetect" click="clickLibraryCheckboxHandler(event)"/>
+			<s:CheckBox label="pagination" click="clickLibraryCheckboxHandler(event)"/>
+			<s:CheckBox label="uuid" click="clickLibraryCheckboxHandler(event)"/>
+		</s:HGroup>
+		<!--
+			// Front-end
+		-->
+		<s:HGroup>
+			<s:Label text="Front-end"/>
+		</s:HGroup>
+		<s:HGroup>
+			<s:CheckBox label="normalize" click="clickFrontEndCheckboxHandler(event)"/>
+			<s:CheckBox label="modernizr" click="clickFrontEndCheckboxHandler(event)"/>
+			<s:CheckBox label="plugins" click="clickFrontEndCheckboxHandler(event)"/>
+			<s:CheckBox label="underscore" click="clickFrontEndCheckboxHandler(event)"/>
+			<s:CheckBox label="jquery" click="clickFrontEndCheckboxHandler(event)"/>
+			<s:CheckBox label="bootstrap" click="clickFrontEndCheckboxHandler(event)"/>
+			<s:CheckBox label="tweenmax" click="clickFrontEndCheckboxHandler(event)"/>
+			<s:CheckBox label="tweenmax-jquery" click="clickFrontEndCheckboxHandler(event)"/>
+		</s:HGroup>
+		
+		<!--
+			// Create Button
+		-->
+		<s:HGroup width="100%" horizontalAlign="right">
+			<s:Button label="Create" click="clickCreateHandler(event)"/>
+		</s:HGroup>
+		<s:TextArea width="100%" id="log"/>
+	</s:VGroup>
+</s:WindowedApplication>
